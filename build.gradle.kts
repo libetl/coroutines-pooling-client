@@ -33,5 +33,5 @@ dependencies {
 
 application {
     // Define the main class for the application.
-    mainClassName = "grouped.calls.AppKt"
+    mainClassName = "org.toilelibre.libe.poolingclient.App"
 }
