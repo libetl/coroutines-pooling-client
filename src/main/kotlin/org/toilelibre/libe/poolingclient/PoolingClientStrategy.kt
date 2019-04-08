@@ -1,4 +1,4 @@
-package grouped.calls
+package org.toilelibre.libe.poolingclient
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BroadcastChannel
@@ -11,17 +11,23 @@ import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
 
 @UseExperimental(ExperimentalCoroutinesApi::class)
-object GroupedCallerFactory {
+object PoolingClientStrategy {
 
-    private val LOGGER = LoggerFactory.getLogger(GroupedCallerFactory::class.java)
+    private val LOGGER = LoggerFactory.getLogger(PoolingClientStrategy::class.java)
 
+    private val processorSupervisorJob = SupervisorJob()
     fun <Input, Output> CoroutineScope.processor(inputs: ReceiveChannel<Input>,
                                                  processDone: SendChannel<Pair<Input, Output?>>,
+                                                 processFailed: SendChannel<Pair<Input, Throwable>>,
                                                  counter: AtomicInteger,
                                                  operation: suspend CoroutineScope.(Input) -> Output?) {
         launch {
             for (input in inputs) {
-                launch {
+                launch(CoroutineExceptionHandler { _, exception ->
+                    launch {
+                        processFailed.send(input to exception)
+                    }
+                } + this.coroutineContext + processorSupervisorJob) {
                     LOGGER.debug("call number ${counter.incrementAndGet()}")
                     val result = operation(input)
                     processDone.send(input to result)
@@ -35,6 +41,8 @@ object GroupedCallerFactory {
                                                 taskIdNotifier: SendChannel<Pair<Input, UUID>>,
                                                 processorSendChannel: SendChannel<Input>,
                                                 processDoneChannel: ReceiveChannel<Pair<Input, Output?>>,
+                                                processFailedChannel: ReceiveChannel<Pair<Input, Throwable>>,
+                                                failureBroadcaster: BroadcastChannel<Pair<UUID, Throwable>>,
                                                 resultBroadcaster: BroadcastChannel<Pair<UUID, Output?>>) = launch {
         val requested = mutableMapOf<String, UUID>()
         while (true) {
@@ -50,6 +58,10 @@ object GroupedCallerFactory {
                         processorSendChannel.send(input)
                     }
                 }
+                processFailedChannel.onReceive { (input, result) ->
+                    failureBroadcaster.send(requested[input.toString()]!! to result)
+                    requested.remove(input.toString())
+                }
                 processDoneChannel.onReceive { (input, result) ->
                     resultBroadcaster.send(requested[input.toString()]!! to result)
                     requested.remove(input.toString())
@@ -63,24 +75,27 @@ object GroupedCallerFactory {
         val taskIdNotifier = Channel<Pair<Input, UUID>>()
         val processorSendChannel = Channel<Input>()
         val processDoneChannel = Channel<Pair<Input, Output?>>()
-        val resultBroadcaster = BroadcastChannel<Pair<UUID, Output?>>(64)
+        val processFailedChannel = Channel<Pair<Input, Throwable>>()
+        val failureBroadcaster = BroadcastChannel<Pair<UUID, Throwable>>(512)
+        val resultBroadcaster = BroadcastChannel<Pair<UUID, Output?>>(512)
 
         val counter = AtomicInteger(0)
 
-        screener(receivedInputs, taskIdNotifier, processorSendChannel, processDoneChannel, resultBroadcaster)
+        screener(receivedInputs, taskIdNotifier, processorSendChannel, processDoneChannel, processFailedChannel, failureBroadcaster, resultBroadcaster)
         repeat(howManyWorkers) {
-            processor(processorSendChannel, processDoneChannel, counter) {
+            processor(processorSendChannel, processDoneChannel, processFailedChannel, counter) {
                 run { operation.invoke(this, it) }
             }
         }
 
-        return Caller(receivedInputs, taskIdNotifier, resultBroadcaster)
+        return Caller(receivedInputs, taskIdNotifier, resultBroadcaster, failureBroadcaster)
     }
 
     class Caller<Input, Output>(private val sendInput: SendChannel<Input>, private val taskIdReader: ReceiveChannel<Pair<Input, UUID>>,
-                                private val resultReader: BroadcastChannel<Pair<UUID, Output?>>) : CoroutineScope {
+                                private val resultReader: BroadcastChannel<Pair<UUID, Output?>>,
+                                private val failureReader: BroadcastChannel<Pair<UUID, Throwable>>) : CoroutineScope {
 
-        private val job = Job()
+        private val job = SupervisorJob()
         override val coroutineContext get() = job + Dispatchers.IO
 
         fun callAndGroupBy(input: Input): Deferred<Output?> = async {
@@ -94,15 +109,28 @@ object GroupedCallerFactory {
 
             val taskId = task!!.second
 
-            val subscription = resultReader.openSubscription()
+            val resultSubscription = resultReader.openSubscription()
+            val errorSubscription = failureReader.openSubscription()
             var received: Pair<UUID, Output?>? = null
+            var error: Pair<UUID, Throwable>? = null
 
-            while (received?.first != taskId) {
-                received = subscription.receive()
+            while (received?.first != taskId && error?.first != taskId) {
+                select<Unit> {
+                    resultSubscription.onReceive { result ->
+                        received = result
+                    }
+                    errorSubscription.onReceive { throwable ->
+                        error = throwable
+                    }
+                }
             }
 
-            subscription.cancel()
-            received.second
+            resultSubscription.cancel()
+            errorSubscription.cancel()
+            if (error?.first == taskId){
+                throw error!!.second
+            }
+            received!!.second
         }
     }
 }

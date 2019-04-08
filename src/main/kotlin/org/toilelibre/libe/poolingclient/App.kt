@@ -1,10 +1,10 @@
-package grouped.calls
+package org.toilelibre.libe.poolingclient
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.security.MessageDigest
 import java.security.SecureRandom
-import grouped.calls.GroupedCallerFactory.caller
+import org.toilelibre.libe.poolingclient.PoolingClientStrategy.caller
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.awaitAll
 
@@ -30,13 +30,17 @@ suspend fun protect(text: String): String {
 }
 
 fun main() = runBlocking {
-    val caller = caller<String, String> { protect(it)}
+    val caller = caller<String, String> { protect(it) }
     val results = mutableListOf<Deferred<String?>>()
+    var i = 0
     repeat(100) {
-        results.add(caller.callAndGroupBy("text"))
+        results.add(caller.callAndGroupBy("text$i"))
         delay(20L)
+        //i++ // uncomment to ungroup calls
+              // it should trigger more operations
     }
 
     println(results.awaitAll())
     println(results.size)
 }
+class App
