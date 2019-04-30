@@ -20,8 +20,7 @@ object PoolingClientStrategy {
                                                  processDone: SendChannel<Pair<Input, Output?>>,
                                                  processFailed: SendChannel<Pair<Input, Throwable>>,
                                                  counter: AtomicInteger,
-                                                 operation: suspend CoroutineScope.(Input) -> Output?) {
-        launch {
+                                                 operation: suspend CoroutineScope.(Input) -> Output?) = launch {
             for (input in inputs) {
                 launch(CoroutineExceptionHandler { _, exception ->
                     launch {
@@ -34,7 +33,6 @@ object PoolingClientStrategy {
                 }
             }
         }
-    }
 
 
     fun <Input, Output> CoroutineScope.screener(receivedInputs: ReceiveChannel<Input>,
@@ -81,19 +79,24 @@ object PoolingClientStrategy {
 
         val counter = AtomicInteger(0)
 
-        screener(receivedInputs, taskIdNotifier, processorSendChannel, processDoneChannel, processFailedChannel, failureBroadcaster, resultBroadcaster)
-        repeat(howManyWorkers) {
+        val jobs =
+              listOf(screener(receivedInputs, taskIdNotifier, processorSendChannel, processDoneChannel,
+                        processFailedChannel, failureBroadcaster, resultBroadcaster)) +
+        (0 until howManyWorkers).map {
             processor(processorSendChannel, processDoneChannel, processFailedChannel, counter) {
-                run { operation.invoke(this, it) }
+                 operation.invoke(this, it)
             }
         }
 
-        return Caller(receivedInputs, taskIdNotifier, resultBroadcaster, failureBroadcaster)
+        return Caller(receivedInputs, taskIdNotifier, resultBroadcaster, failureBroadcaster, counter, jobs)
     }
 
-    class Caller<Input, Output>(private val sendInput: SendChannel<Input>, private val taskIdReader: ReceiveChannel<Pair<Input, UUID>>,
+    class Caller<Input, Output>(private val sendInput: Channel<Input>,
+                                private val taskIdReader: Channel<Pair<Input, UUID>>,
                                 private val resultReader: BroadcastChannel<Pair<UUID, Output?>>,
-                                private val failureReader: BroadcastChannel<Pair<UUID, Throwable>>) : CoroutineScope {
+                                private val failureReader: BroadcastChannel<Pair<UUID, Throwable>>,
+                                private val counter: AtomicInteger,
+                                private val jobs: List<Job>) : CoroutineScope {
 
         private val job = SupervisorJob()
         override val coroutineContext get() = job + Dispatchers.IO
@@ -131,6 +134,12 @@ object PoolingClientStrategy {
                 throw error!!.second
             }
             received!!.second
+        }
+
+        fun invocationsCount () = counter.get()
+
+        fun stop() {
+            jobs.map { it.cancel() }
         }
     }
 }
