@@ -1,5 +1,5 @@
 # coroutines-pooling-client
-This is how we can pool several backend calls with the same exact input using kotlin coroutines
+This is how we can pool several backend calls having the same exact input using kotlin coroutines
 
 ![Screencast](screencast.gif)
 
