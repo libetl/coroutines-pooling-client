@@ -36,6 +36,6 @@ class SaltRunnerTest {
         }
 
         assertTrue { results.size == 100 }
-        assertTrue { invocationsCount == 7 }
+        assertTrue { invocationsCount <= 10 }
     }
 }
