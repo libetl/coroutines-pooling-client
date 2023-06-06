@@ -3,6 +3,7 @@ package org.toilelibre.libe.poolingclient
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -16,6 +17,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactive.awaitFirst
 import kotlinx.coroutines.reactor.asFlux
 import kotlinx.coroutines.selects.select
+import org.slf4j.LoggerFactory
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -30,7 +32,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * is returned instead of a new task.
  * Then the caller waits for the task to complete, with either the result or the exception
  */
-object PooledCallerStrategy {
+object PoolingClientStrategy {
+
+    private val LOGGER = LoggerFactory.getLogger(PoolingClientStrategy::class.java)
 
     private val processorSupervisorJob = SupervisorJob()
     fun <Input, Output> CoroutineScope.processor(
@@ -39,8 +43,8 @@ object PooledCallerStrategy {
         processFailed: SendChannel<Pair<Input, Throwable>>,
         counter: AtomicInteger,
         operation: suspend CoroutineScope.(Input) -> Output?
-    ) {
-        launch {
+    ): Job {
+        return launch {
             for (input in inputs) {
                 launch(
                     CoroutineExceptionHandler { _, exception ->
@@ -49,6 +53,7 @@ object PooledCallerStrategy {
                         }
                     } + this.coroutineContext + processorSupervisorJob
                 ) {
+                    LOGGER.debug("call number ${counter.incrementAndGet()}")
                     val result = operation(input)
                     processDone.send(input to result)
                 }
@@ -107,7 +112,12 @@ object PooledCallerStrategy {
 
         val counter = AtomicInteger(0)
 
-        screener(
+        val jobs = (0 until howManyWorkers).map {
+            processor(processorSendChannel, processDoneChannel, processFailedChannel, counter) {
+                operation.invoke(this, it)
+                run { operation.invoke(this, it) }
+            }
+        } + screener(
             keyComputationFunction,
             receivedInputs,
             taskIdNotifier,
@@ -117,11 +127,6 @@ object PooledCallerStrategy {
             failureBroadcaster,
             resultBroadcaster
         )
-        repeat(howManyWorkers) {
-            processor(processorSendChannel, processDoneChannel, processFailedChannel, counter) {
-                run { operation.invoke(this, it) }
-            }
-        }
 
         return Caller(
             this,
@@ -129,7 +134,9 @@ object PooledCallerStrategy {
             taskIdNotifier,
             resultBroadcaster,
             failureBroadcaster,
-            keyComputationFunction
+            keyComputationFunction,
+            counter,
+            { jobs.map { it.cancel() } }
         )
     }
 
@@ -141,10 +148,12 @@ object PooledCallerStrategy {
         private val taskIdReader: MutableSharedFlow<Pair<Input, UUID>>,
         private val resultReader: MutableSharedFlow<Pair<UUID, Output?>>,
         private val failureReader: MutableSharedFlow<Pair<UUID, Throwable>>,
-        private val keyComputationFunction: (Input?) -> String?
+        private val keyComputationFunction: (Input?) -> String?,
+        private val counter: AtomicInteger,
+        private val cancel: suspend CoroutineScope.() -> Unit
     ) {
 
-        fun callAndGroupBy(input: Input): Deferred<Result<out Output>> = coroutineScope.async(SupervisorJob()) {
+        fun callAndGroupBy(input: Input): Deferred<out Output> = coroutineScope.async(SupervisorJob()) {
             var task: Pair<Input, UUID>? = null
             val taskIdSubscriber = taskIdReader
             val resultSubscription = resultReader
@@ -192,7 +201,13 @@ object PooledCallerStrategy {
                     .awaitFirst()
 
                 emit(returned.map { it.second!! })
-            }.take(1).first()
+            }.take(1).first().getOrThrow()
+        }
+
+        fun invocationsCount() = counter.get()
+
+        suspend fun stop() {
+            cancel(coroutineScope)
         }
     }
 }
