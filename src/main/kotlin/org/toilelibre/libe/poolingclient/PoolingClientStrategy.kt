@@ -135,9 +135,8 @@ object PoolingClientStrategy {
             resultBroadcaster,
             failureBroadcaster,
             keyComputationFunction,
-            counter,
-            { jobs.map { it.cancel() } }
-        )
+            counter
+        ) { jobs.map { it.cancel() } }
     }
 
     class PooledCallerStrategyException(val taskId: UUID, cause: Throwable) : Exception(cause)
@@ -153,8 +152,8 @@ object PoolingClientStrategy {
         private val cancel: suspend CoroutineScope.() -> Unit
     ) {
 
-        fun callAndGroupBy(input: Input): Deferred<out Output> = coroutineScope.async(SupervisorJob()) {
-            var task: Pair<Input, UUID>? = null
+        fun callAndGroupBy(input: Input): Deferred<Output> = coroutineScope.async(SupervisorJob()) {
+            var task: Pair<Input, UUID>?
             val taskIdSubscriber = taskIdReader
             val resultSubscription = resultReader
             val errorSubscription = failureReader

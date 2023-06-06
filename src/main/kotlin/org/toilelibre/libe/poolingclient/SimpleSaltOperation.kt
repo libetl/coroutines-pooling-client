@@ -1,12 +1,8 @@
 package org.toilelibre.libe.poolingclient
 
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
 import java.security.MessageDigest
 import java.security.SecureRandom
-import org.toilelibre.libe.poolingclient.PoolingClientStrategy.caller
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.awaitAll
 
 object SimpleSaltOperation {
 
@@ -14,10 +10,8 @@ object SimpleSaltOperation {
         delay(300)
         println("calling operation")
         val hash = md5(input)
-        return (0 until hash.length).joinToString("") {
-            Integer.toString(
-                    (hash[it].toInt() and 0xff) + 0x100,
-                    16).substring(1)
+        return (hash.indices).joinToString("") {
+            ((hash[it].code and 0xff) + 0x100).toString(16).substring(1)
         }
     }
 
