@@ -18,6 +18,7 @@ import kotlinx.coroutines.reactive.awaitFirst
 import kotlinx.coroutines.reactor.asFlux
 import kotlinx.coroutines.selects.select
 import org.slf4j.LoggerFactory
+import reactor.core.publisher.Flux
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -177,19 +178,20 @@ object PoolingClientStrategy {
                     return@flow
                 }
 
-                val returned = resultSubscription.asFlux(coroutineContext)
-                    .map { Result.success(it) }
-                    .concatWith(
-                        errorSubscription.asFlux(coroutineContext)
-                            .map {
-                                Result.failure<Pair<UUID, Output?>>(
-                                    PooledCallerStrategyException(
-                                        it.first,
-                                        it.second
-                                    )
+
+                val returned = Flux.merge(
+                    resultSubscription.asFlux(coroutineContext)
+                        .map { Result.success(it) },
+                    errorSubscription.asFlux(coroutineContext)
+                        .map {
+                            Result.failure<Pair<UUID, Output?>>(
+                                PooledCallerStrategyException(
+                                    it.first,
+                                    it.second
                                 )
-                            }
-                    )
+                            )
+                        }
+                )
                     .filter {
                         if (it.isSuccess) return@filter it.getOrThrow().first == taskId
                         if (it.isFailure) return@filter (
@@ -200,7 +202,7 @@ object PoolingClientStrategy {
                     .awaitFirst()
 
                 emit(returned.map { it.second!! })
-            }.take(1).first().getOrThrow()
+            }.take(1).first().getOrElse { throw it.cause!! }
         }
 
         fun invocationsCount() = counter.get()
