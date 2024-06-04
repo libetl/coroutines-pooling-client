@@ -115,7 +115,6 @@ object PoolingClientStrategy {
 
         val jobs = (0 until howManyWorkers).map {
             processor(processorSendChannel, processDoneChannel, processFailedChannel, counter) {
-                operation.invoke(this, it)
                 run { operation.invoke(this, it) }
             }
         } + screener(
